@@ -1,2 +1,2 @@
 # Analyse-Risque-Marche-VaR-ES
-Analyse économétrique du risque de marché (VaR et Expected Shortfall) pour une banque, une compagnie d’assurance et un broker-dealer à l’aide des méthodes Simulation Historique et GARCH sur la période 2007–2023.
+Analyse économétrique du risque de marché (VaR et Expected Shortfall) pour une banque, une assurance et un broker-dealer, réalisée en R et Python à l’aide des méthodes Simulation Historique et GARCH (2007–2023).
