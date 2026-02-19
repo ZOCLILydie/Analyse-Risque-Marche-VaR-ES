@@ -1,0 +1,1558 @@
+---
+title: "FinanceEconometrics"
+author: "Lydie ZOCLI, Amidath ALEGUE, Simey HIN"
+date: "2025-02-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Importation des bibliothèques nécessaires
+
+#install.packages("dplyr")
+#install.packages("tseries")
+#install.packages("moments")
+#install.packages("readxl")
+#install.packages("rugarch")
+#install.packages("tidyr")
+#install.packages("ggplot2")
+#install.packages("xts")
+#install.packages("quantmod")
+#install.packages("xts")
+#install.packages("rugarch")
+#install.packages("parallel")
+library(tidyr)
+library(dplyr)
+library(tseries)
+library(moments)
+library(readxl)
+library(rugarch)
+library(ggplot2)
+library(xts)
+library(quantmod)
+library(parallel)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+##################Step 1: Download Time-Series Data // In this step, we'll select financial institutions, retrieve their price data, and compute daily log returns.
+
+# Charger les bibliothèques nécessaires
+library(quantmod)
+
+# Définir les paramètres
+start_date <- "2007-01-01"  # Date de début
+end_date <- "2023-12-31"    # Date de fin
+tickers <- c("JPM", "AIG", "GS")  # Liste des tickers (banque, assurance, courtier)
+
+# Télécharger les données et les enregistrer dans des fichiers CSV
+for (ticker in tickers) {
+  # Télécharger les prix ajustés
+  data <- getSymbols(ticker, src = "yahoo", from = start_date, to = end_date, auto.assign = FALSE)
+  
+  # Enregistrer les prix ajustés dans un fichier CSV
+  write.csv(as.data.frame(Cl(data)), paste0(ticker, "_adjusted_prices.csv"))
+}
+```
+
+```{r}
+# Charger les fichiers CSV
+jpm_data <- read.csv("JPM_adjusted_prices.csv")
+aig_data <- read.csv("AIG_adjusted_prices.csv")
+gs_data <- read.csv("GS_adjusted_prices.csv")
+
+# Renommer la colonne "X" en "Date" pour chaque fichier
+colnames(jpm_data)[1] <- "Date"
+colnames(aig_data)[1] <- "Date"
+colnames(gs_data)[1] <- "Date"
+
+# Renommer les colonnes de prix pour chaque institution
+colnames(jpm_data)[2] <- "JPM"
+colnames(aig_data)[2] <- "AIG"
+colnames(gs_data)[2] <- "GS"
+
+# Fusionner les fichiers sur la colonne "Date"
+combined_data <- merge(jpm_data, aig_data, by = "Date", all = TRUE)
+combined_data <- merge(combined_data, gs_data, by = "Date", all = TRUE)
+
+# Sauvegarder la base de données combinée dans un fichier CSV
+write.csv(combined_data, "Combined_Adjusted_Prices.csv", row.names = FALSE)
+
+# Afficher un aperçu des données combinées
+head(combined_data)
+```
+
+
+```{r}
+# Charger la base de données combinée
+Combined_Adjusted_Prices <- read.csv("Combined_Adjusted_Prices.csv")
+
+# Transformer les prix en rendements logarithmiques
+log_returns <- Combined_Adjusted_Prices  # Copier la structure des données pour les rendements
+
+# Appliquer la formule des rendements logarithmiques
+for (col in colnames(log_returns)[-1]) {  # Ignorer la colonne "Date"
+  log_returns[[col]] <- c(NA, diff(log(Combined_Adjusted_Prices[[col]])))
+}
+
+# Sauvegarder les rendements logarithmiques dans un fichier CSV
+write.csv(log_returns, "Log_Returns.csv", row.names = FALSE)
+
+# Afficher un aperçu des rendements
+head(log_returns)
+```
+
+```{r}
+# Étape 1 : Conversion des données au bon format
+df <- Combined_Adjusted_Prices
+
+data_cleaned <- df %>%
+  mutate(
+    Date = as.Date(Date, format = "%Y-%m-%d"), # Convertir en format Date
+    JPM = as.numeric(JPM),  # Convertir les colonnes en numérique
+    AIG = as.numeric(AIG),
+    GS = as.numeric(GS)
+  ) %>%
+  as.data.frame() # Convertir le format tibble en dataframe
+
+# Étape 2 : Création des rendements logarithmiques pour chaque action
+data_cleaned <- data_cleaned %>%
+  mutate(
+    Returns_JPM = log(JPM / lag(JPM)),
+    Returns_AIG = log(AIG / lag(AIG)),
+    Returns_GS = log(GS / lag(GS))
+  ) %>%
+  na.omit()  # Supprimer les NA générés par lag()
+
+# Étape 3 : Fonction pour calculer les statistiques descriptives
+calculate_statistics <- function(data, column) {
+  mean_value <- mean(data[[column]], na.rm = TRUE)
+  variance_value <- var(data[[column]], na.rm = TRUE)
+  skewness_value <- skewness(data[[column]], na.rm = TRUE)
+  kurtosis_value <- kurtosis(data[[column]], na.rm = TRUE)
+  
+  return(data.frame(
+    Action = column,
+    Mean = mean_value,
+    Variance = variance_value,
+    Skewness = skewness_value,
+    Kurtosis = kurtosis_value
+  ))
+}
+
+# Calcul des statistiques pour chaque action
+stats_JPM <- calculate_statistics(data_cleaned, "Returns_JPM")
+stats_AIG <- calculate_statistics(data_cleaned, "Returns_AIG")
+stats_GS <- calculate_statistics(data_cleaned, "Returns_GS")
+
+# Combinaison des résultats en un seul tableau
+statistics_table <- rbind(stats_JPM, stats_AIG, stats_GS)
+
+# Affichage du tableau des statistiques descriptives
+print(statistics_table)
+
+# Étape 4 : Test de stationnarité avec Augmented Dickey-Fuller (ADF)
+adf_test <- function(data, column) {
+  test <- adf.test(data[[column]], alternative = "stationary")
+  p_value <- test$p.value
+  
+  return(data.frame(
+    Action = column,
+    ADF_p_value = p_value
+  ))
+}
+
+# Test ADF pour chaque action
+adf_JPM <- adf_test(data_cleaned, "Returns_JPM")
+adf_AIG <- adf_test(data_cleaned, "Returns_AIG")
+adf_GS <- adf_test(data_cleaned, "Returns_GS")
+
+# Combinaison des résultats des tests ADF en un seul tableau
+adf_results <- rbind(adf_JPM, adf_AIG, adf_GS)
+
+# Affichage du tableau des résultats du test ADF
+print(adf_results)
+```
+
+
+```{r}
+#Faits stylisés
+
+
+# Vérification des faits stylisée----
+
+
+Prices_JPM <- data_cleaned$JPM
+Prices_AIG <- data_cleaned$AIG
+Prices_GS <- data_cleaned$GS
+
+Dates_Prices <- data_cleaned$Date
+
+# 1. Stationnarité : Illustration
+
+## Number of prices' observations
+T_Prices_JPM <- length(Prices_JPM)
+T_Prices_AIG <- length(Prices_AIG)
+T_Prices_GS <- length(Prices_GS)
+
+## Computation of log-returns
+Returns_JPM <- log(Prices_JPM[2:T_Prices_JPM] / Prices_JPM[1:(T_Prices_JPM - 1)])
+Returns_AIG <- log(Prices_AIG[2:T_Prices_AIG] / Prices_AIG[1:(T_Prices_AIG - 1)])
+Returns_GS <- log(Prices_GS[2:T_Prices_GS] / Prices_GS[1:(T_Prices_GS- 1)])
+
+## Dates associated to returns
+Dates_Returns_JPM <- Dates_Prices[2:T_Prices_JPM]
+Dates_Returns_AIG <- Dates_Prices[2:T_Prices_AIG]
+Dates_Returns_GS <- Dates_Prices[2:T_Prices_GS]
+
+
+## Plots of prices and returns
+
+#par(mfrow = c(1, 3))  # 1 ligne, 3 colonnes
+
+# Tracer les prix
+
+#par(mfrow = c(3, 1))
+
+par(mfrow = c(1, 1))
+
+# Définir les limites communes pour l'axe Y
+#ylim_range <- range(Prices_JPM, Prices_AIG, Prices_GS)
+
+plot(Dates_Prices, Prices_JPM, type = "l",
+     main = "Stationnarity of price_JPM",
+     xlab = "Date", ylab = "Prices_JPM",
+     col = "blue")
+
+plot(Dates_Prices, Prices_AIG, type = "l",
+     main = "Stationnarity of price_AIG",
+     xlab = "Date", ylab = "Prices_AIG",
+     col = "red")
+
+plot(Dates_Prices, Prices_GS, type = "l",
+     main = "Stationnarity of price_GS",
+     xlab = "Date", ylab = "Prices_GS",
+     col = "green")
+
+
+
+# Tracer les rendements
+par(mfrow = c(1, 1))
+
+plot(Dates_Returns_JPM, Returns_JPM, type = "l",
+     main = "Stationnarity of returns_JPM",
+     xlab = "Date", ylab = "Returns_JPM",
+     col = "blue")
+
+plot(Dates_Returns_AIG, Returns_AIG, type = "l",
+     main = "Stationnarity of returns_AIG",
+     xlab = "Date", ylab = "Returns_AIG",
+     col = "red")
+
+plot(Dates_Returns_GS, Returns_GS, type = "l",
+     main = "Stationnarity of returns_GS",
+     xlab = "Date", ylab = "Returns_GS",
+     col = "green")
+
+# Illustration of the 2nd stylized fact: Heavy tails
+
+kurto <- kurtosis(Returns_JPM)
+cat("Kurtosis of returns:", kurto, "\n")
+
+kurto <- kurtosis(Returns_AIG)
+cat("Kurtosis of returns:", kurto, "\n")
+
+kurto <- kurtosis(Returns_GS)
+cat("Kurtosis of returns:", kurto, "\n")
+
+
+# Illustration of the 3rd stylised fact: Asymmetry
+
+skew <- skewness(Returns_JPM)
+cat("Skewness of returns:", skew, "\n")
+
+skew <- skewness(Returns_AIG)
+cat("Skewness of returns:", skew, "\n")
+
+skew <- skewness(Returns_GS)
+cat("Skewness of returns:", skew, "\n")
+
+
+# Illustration of the 4th stylized fact: Absence of autocorrelations
+par(mfrow = c(1, 3))
+
+acf(Returns_JPM)
+acf(Returns_AIG)
+acf(Returns_GS)
+
+
+# Illustration of the 5th stylized fact: Long-range dependence
+
+## Computation of squared returns
+
+Returns_sq_JPM <- Returns_JPM**2
+Returns_sq_AIG <- Returns_AIG**2
+Returns_sq_GS <- Returns_GS**2
+
+## Computation of absolute returns
+
+Returns_abs_JPM <- abs(Returns_JPM)
+Returns_abs_AIG <- abs(Returns_AIG)
+Returns_abs_GS <- abs(Returns_GS)
+
+## ACF plot of squared returns
+
+acf(Returns_sq_JPM)
+acf(Returns_sq_AIG)
+acf(Returns_sq_GS)
+
+
+## ACF plot of absolute returns
+
+acf(Returns_abs_JPM)
+acf(Returns_abs_AIG)
+acf(Returns_abs_GS)
+
+# Illustration of the 6th stylized fact: Volatility clustering
+
+par(mfrow = c(1, 1))
+
+plot(Dates_Returns_JPM, Returns_sq_JPM, type="l", 
+     main="Volatility_JPM", 
+     xlab="Date", ylab="Squared returns_JPM")
+
+plot(Dates_Returns_AIG, Returns_sq_AIG, type="l", 
+     main="Volatility_AIG", 
+     xlab="Date", ylab="Squared returns_AIG")
+
+plot(Dates_Returns_GS, Returns_sq_GS, type="l", 
+     main="Volatility_GS", 
+     xlab="Date", ylab="Squared returns_GS")
+
+
+plot(Dates_Returns_JPM, Returns_abs_JPM, type="l", 
+     main="Volatility_JPM", 
+     xlab="Date", ylab="Absolute returns_JPM")
+
+
+plot(Dates_Returns_AIG, Returns_abs_AIG, type="l", 
+     main="Volatility AIG", 
+     xlab="Date", ylab="Absolute returns_AIG")
+
+
+plot(Dates_Returns_GS, Returns_abs_GS, type="l", 
+     main="Volatility GS", 
+     xlab="Date", ylab="Absolute returns_GS")
+
+
+
+# # Illustration of the 7th stylized fact: Aggregational Gaussianity
+
+par(mfrow = c(1, 1))
+
+hist(Returns_JPM, breaks = 200, main = "Histogram of Daily Returns of JPM")
+hist(Returns_AIG, breaks = 200, main = "Histogram of Daily Returns of AIG")
+hist(Returns_GS, breaks = 200, main = "Histogram of Daily Returns of GS")
+
+
+par(mfrow = c(1, 3))
+
+qqnorm(Returns_JPM, main = "QQ-plot of Daily Returns of JPM")
+qqline(Returns_JPM)
+
+qqnorm(Returns_AIG, main = "QQ-plot of Daily Returns of AIG")
+qqline(Returns_AIG)
+
+qqnorm(Returns_GS, main = "QQ-plot of Daily Return of GS")
+qqline(Returns_GS)
+
+
+
+# Comparaison avec rendements mensuels 
+Prices_monthly_JPM <- aggregate(Prices_JPM, list(format(Dates_Prices, "%Y-%m")), mean)$x
+Prices_monthly_AIG <- aggregate(Prices_AIG, list(format(Dates_Prices, "%Y-%m")), mean)$x
+Prices_monthly_GS <- aggregate(Prices_GS, list(format(Dates_Prices, "%Y-%m")), mean)$x
+
+Dates_Prices_monthly_JPM <- unique(format(Dates_Prices, "%Y-%m"))
+Dates_Prices_monthly_AIG <- unique(format(Dates_Prices, "%Y-%m"))
+Dates_Prices_monthly_GS<- unique(format(Dates_Prices, "%Y-%m"))
+
+T_Prices_monthly_JPM<- length(Prices_monthly_JPM)
+T_Prices_monthly_AIG<- length(Prices_monthly_AIG)
+T_Prices_monthly_GS<- length(Prices_monthly_GS)
+
+
+Returns_monthly_JPM <- log(Prices_monthly_JPM[2:T_Prices_monthly_JPM] / Prices_monthly_JPM[1:(T_Prices_monthly_JPM - 1)])
+Returns_monthly_AIG <- log(Prices_monthly_AIG[2:T_Prices_monthly_AIG] / Prices_monthly_AIG[1:(T_Prices_monthly_AIG - 1)])
+Returns_monthly_GS <- log(Prices_monthly_JPM[2:T_Prices_monthly_GS] / Prices_monthly_GS[1:(T_Prices_monthly_GS - 1)])
+
+
+hist(Returns_monthly_JPM, breaks = 20, main = "Histogram of Monthly Returns of JPM")
+hist(Returns_monthly_AIG, breaks = 20, main = "Histogram of Monthly Returns of AIG")
+hist(Returns_monthly_GS, breaks = 20, main = "Histogram of Monthly Returns of GS")
+
+kurto_monthly_JPM<- kurtosis(Returns_monthly_JPM)
+cat("Kurtosis of monthly returns of JPM:", kurto_monthly_JPM, "\n")
+
+kurto_monthly_AIG<- kurtosis(Returns_monthly_AIG)
+cat("Kurtosis of monthly returns of AIG:", kurto_monthly_AIG, "\n")
+
+kurto_monthly_GS<- kurtosis(Returns_monthly_GS)
+cat("Kurtosis of monthly returns of GS:", kurto_monthly_GS, "\n")
+
+
+skew_monthly_JPM <- skewness(Returns_monthly_JPM)
+cat("Skewness of monthly returns of JPM:", skew_monthly_JPM, "\n")
+
+skew_monthly_AIG <- skewness(Returns_monthly_AIG)
+cat("Skewness of monthly returns of AIG:", skew_monthly_AIG, "\n")
+
+skew_monthly_GS <- skewness(Returns_monthly_GS)
+cat("Skewness of monthly returns of GS:", skew_monthly_GS, "\n")
+
+qqnorm(Returns_monthly_JPM, main = "QQ-plot of Monthly Returns of JPM")
+qqline(Returns_monthly_JPM)
+
+qqnorm(Returns_monthly_AIG, main = "QQ-plot of Monthly Returns of AIG")
+qqline(Returns_monthly_AIG)
+
+qqnorm(Returns_monthly_GS, main = "QQ-plot of Monthly Returns of GS")
+qqline(Returns_monthly_GS)
+```
+
+
+```{r}
+# Import libraries and load packages
+list.of.packages <- c("tidyverse", "dplyr", "readxl", "haven", "openxlsx", "ggplot2", "xts",
+                      "RColorBrewer", "rugarch", "tseries", "urca", "moments", "lmtest", "plyr")
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[, "Package"])]
+if (length(new.packages)) { install.packages(new.packages, dependencies = TRUE) }
+
+lapply(list.of.packages, require, character.only = TRUE)
+
+# Load Log Returns Data
+Log_Returns <- read_csv("Log_Returns.csv")
+Log_Returns <- data.frame(Log_Returns[-1,])
+
+JPM <- Log_Returns$JPM
+AIG <- Log_Returns$AIG
+GS <- Log_Returns$GS
+
+# Convert data to xts format
+JPM_xts <- xts(x = Log_Returns$JPM, order.by = as.Date(Log_Returns$Date))
+AIG_xts <- xts(x = Log_Returns$AIG, order.by = as.Date(Log_Returns$Date))
+GS_xts <- xts(x = Log_Returns$GS, order.by = as.Date(Log_Returns$Date))
+
+# Check Skewness and Kurtosis
+skewness(JPM)  # 0.2660981, No need for asymmetric GARCH
+skewness(AIG)  # -3.097822, Need asymmetric model
+skewness(GS)   # 0.1874643, No need for asymmetric GARCH
+
+kurtosis(JPM)  # 19.17505
+kurtosis(AIG)  # 100.4868
+kurtosis(GS)   # 17.82102
+
+# Function to Estimate GARCH Models
+estimate_garch <- function(data, dist) {
+  ugarchfit(ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+    mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+    distribution.model = dist
+  ), data = data)
+}
+
+# Function to Compute Model Metrics
+model_metrics <- function(model) {
+  c(
+    Omega = coef(model)["omega"],
+    Alpha1 = coef(model)["alpha1"],
+    Beta1 = coef(model)["beta1"],
+    Shape = if ("shape" %in% names(coef(model))) coef(model)["shape"] else NA,
+    AIC = infocriteria(model)[1],
+    BIC = infocriteria(model)[2],
+    LogLik = likelihood(model),
+    LjungBox_p = Box.test(residuals(model, standardize = TRUE), type = "Ljung-Box", lag = 10)$p.value
+  )
+}
+
+# Function to Run Diagnostics
+diagnostic_checks <- function(model) {
+  res <- residuals(model, standardize = TRUE)
+  res_sq <- res^2
+  c(
+    LjungBox_Std = Box.test(res, lag = 10, type = "Ljung-Box")$p.value,
+    LjungBox_Sq = Box.test(res_sq, lag = 10, type = "Ljung-Box")$p.value,
+    JB_p = jarque.bera.test(res)$p.value,
+    Skewness = skewness(res),
+    Kurtosis = kurtosis(res)
+  )
+}
+
+# Function to Run and Evaluate GARCH Models
+run_garch_analysis <- function(data_xts, name, distributions) {
+  volatility_est <- setNames(lapply(distributions, estimate_garch, data = data_xts), distributions)
+  metrics <- round(as.data.frame(sapply(volatility_est, model_metrics)), 6)
+  diagnostics <- as.data.frame(round(sapply(volatility_est, diagnostic_checks), 3))
+
+  print(paste("Results for", name))
+  print(metrics)
+  print(diagnostics)
+
+  # Plot diagnostics
+  dist_full_names <- list(
+    norm = "Normal Distribution",
+    std = "Student-t Distribution",
+    ged = "Generalized Error Distribution (GED)"
+  )
+
+  dev.new(width = 8.27, height = 11.69)
+  par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+  lapply(names(volatility_est), function(dist_name) {
+    res <- residuals(volatility_est[[dist_name]], standardize = TRUE)
+    res_sq <- res^2
+    full_name <- dist_full_names[[dist_name]]
+    qqnorm(res, main = paste(name, "- Q-Q Plot (", full_name, ")", sep = "")); qqline(res, col = "red")
+    acf(res, main = paste(name, "- ACF (", full_name, ")", sep = ""))
+    pacf(res, main = paste(name, "- PACF (", full_name, ")", sep = ""))
+    acf(res_sq, main = paste(name, "- ACF of Squared Residuals (", full_name, ")", sep = ""))
+  })
+}
+
+# Running GARCH Analysis for JPM
+run_garch_analysis(JPM_xts, "JPM", c("norm", "std", "ged"))
+
+# Running GARCH Analysis for AIG
+run_garch_analysis(AIG_xts, "AIG", c("std", "ged", "sstd", "sged", "nig"))
+
+# Running GARCH Analysis for GS
+run_garch_analysis(GS_xts, "GS", c("norm", "std", "ged"))
+
+# EGARCH Model for AIG (to handle asymmetry)
+spec_egarch_aig <- ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+  distribution.model = "sstd"
+)
+fit_egarch_aig <- ugarchfit(spec = spec_egarch_aig, data = AIG_xts)
+
+# Display Summary of EGARCH Model for AIG
+summary(fit_egarch_aig)
+
+# GJR-GARCH Model for AIG (Another Asymmetric Model)
+spec_gjr_aig <- ugarchspec(
+  variance.model = list(model = "gjrGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+  distribution.model = "sstd"
+)
+fit_gjr_aig <- ugarchfit(spec = spec_gjr_aig, data = AIG_xts)
+
+# Display Summary of GJR-GARCH Model for AIG
+summary(fit_gjr_aig)
+
+# Choosing the Best Model
+all_models <- list(
+  GARCH_STD_AIG = fit_egarch_aig,
+  GARCH_SSTD_AIG = fit_gjr_aig
+)
+all_metrics <- data.frame(sapply(all_models, model_metrics))
+print(all_metrics)
+
+# Conclusion: The best model for AIG is likely EGARCH with a Skewed Student-t distribution
+
+# EGARCH Model for GS (checking if it improves over standard GARCH)
+spec_egarch_gs <- ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+  distribution.model = "sstd"
+)
+fit_egarch_gs <- ugarchfit(spec = spec_egarch_gs, data = GS_xts)
+
+# Summary of EGARCH Model for GS
+summary(fit_egarch_gs)
+
+# Choosing the Best Model for GS
+gs_models <- list(
+  GARCH_STD_GS = fit_egarch_gs
+)
+gs_metrics <- data.frame(sapply(gs_models, model_metrics))
+print(gs_metrics)
+```
+
+```{r}
+## Backtesting----
+
+
+
+# Packages required
+
+library("readxl")
+library("moments")
+library("smoots")
+library("tseries")
+library("feasts")
+library("xts")
+library("tsgarch")
+
+# Define LR_UC function : Likelihood Ratio Test for Unconditional Coverage (Test de ratio de vraisemblance pour la couverture inconditionnelle)
+
+
+Backtest_LR_UC <- function(alpha, hits){
+  
+  T_1 <- sum(hits)
+  T_0 <- length(hits) - T_1
+  
+  L_alpha <- (1 - alpha)^T_0 * alpha^T_1
+  
+  eta_hat <- mean(hits)
+  
+  L_eta_hat <- (1 - eta_hat)^T_0 * eta_hat^T_1
+  
+  LR_UC <- -2 * log(L_alpha / L_eta_hat)
+  
+  critical_value <- qchisq(1 - alpha, 1)
+  
+  Rejection_H0 <- (LR_UC > critical_value)
+  
+  Pvalue <- 1 - pchisq(LR_UC, 1)
+  
+  return(list(Test_statistic_LR_UC = LR_UC,
+              Critical_Value_LR_UC = critical_value,
+              Rejection_H0_LR_UC = Rejection_H0,
+              Pvalue_LR_UC = Pvalue))
+  
+}
+
+# Define LR_IND function : Likelihood Ratio Test for Independence (Test de ratio de vraisemblance pour l'indépendance). 
+
+Backtest_LR_IND <- function(alpha, hits){
+  
+  T_1 <- sum(hits)
+  T_0 <- length(hits) - T_1
+  
+  T_0_0 <- 0
+  T_0_1 <- 0
+  T_1_0 <- 0
+  T_1_1 <- 0
+  
+  for (n in 2:length(hits)){
+    
+    if (hits[n-1] == 0 & hits[n] == 0){
+      
+      T_0_0 <- T_0_0 + 1
+      
+    } else if (hits[n-1] == 0 & hits[n] == 1){
+      
+      T_0_1 <- T_0_1 + 1
+      
+    } else if (hits[n-1] == 1 & hits[n] == 0){
+      
+      T_1_0 <- T_1_0 + 1
+      
+    } else if (hits[n-1] == 1 & hits[n] == 1){
+      
+      T_1_1 <- T_1_1 + 1
+      
+    } 
+    
+  }
+  
+  L_alpha <- (1 - alpha)^T_0 * alpha^T_1
+  
+  eta_0_1_hat <- T_0_1 / (T_0_0 + T_0_1)
+  
+  eta_1_1_hat <- T_1_1 / (T_1_0 + T_1_1)
+  
+  L_Pi_hat <- (1 - eta_0_1_hat)^T_0_0 * eta_0_1_hat^T_0_1 * (1 - eta_1_1_hat)^T_1_0 * eta_1_1_hat^T_1_1
+  
+  LR_IND <- -2 * log(L_alpha / L_Pi_hat)
+  
+  critical_value <- qchisq(1 - alpha, 1)
+  
+  Rejection_H0 <- (LR_IND > critical_value)
+  
+  Pvalue <- 1 - pchisq(LR_IND, 1)
+  
+  return(list(Test_statistic_LR_IND = LR_IND,
+              Critical_Value_LR_IND = critical_value,
+              Rejection_H0_LR_IND = Rejection_H0,
+              Pvalue_LR_IND = Pvalue))
+  
+}
+
+# Define LR_CC function : Likelihood Ratio Test for Conditional Coverage
+
+Backtest_LR_CC <- function(alpha, hits){
+  
+  # LR_UC part 
+  
+  T_1 <- sum(hits)
+  T_0 <- length(hits) - T_1
+  
+  L_alpha <- (1 - alpha)^T_0 * alpha^T_1
+  
+  eta_hat <- mean(hits)
+  
+  L_eta_hat <- (1 - eta_hat)^T_0 * eta_hat^T_1
+  
+  LR_UC <- -2 * log(L_alpha / L_eta_hat)
+  
+  # LR_IND part
+  
+  T_0_0 <- 0
+  T_0_1 <- 0
+  T_1_0 <- 0
+  T_1_1 <- 0
+  
+  for (n in 2:length(hits)){
+    
+    if (hits[n-1] == 0 & hits[n] == 0){
+      
+      T_0_0 <- T_0_0 + 1
+      
+    } else if (hits[n-1] == 0 & hits[n] == 1){
+      
+      T_0_1 <- T_0_1 + 1
+      
+    } else if (hits[n-1] == 1 & hits[n] == 0){
+      
+      T_1_0 <- T_1_0 + 1
+      
+    } else if (hits[n-1] == 1 & hits[n] == 1){
+      
+      T_1_1 <- T_1_1 + 1
+      
+    } 
+    
+  }
+  
+  eta_0_1_hat <- T_0_1 / (T_0_0 + T_0_1)
+  
+  eta_1_1_hat <- T_1_1 / (T_1_0 + T_1_1)
+  
+  L_Pi_hat <- (1 - eta_0_1_hat)^T_0_0 * eta_0_1_hat^T_0_1 * (1 - eta_1_1_hat)^T_1_0 * eta_1_1_hat^T_1_1
+  
+  LR_IND <- -2 * log(L_alpha / L_Pi_hat)
+  
+  # LR_CC part
+  
+  LR_CC <- LR_UC + LR_IND
+  
+  critical_value <- qchisq(1 - alpha, 2)
+  
+  Rejection_H0 <- (LR_CC > critical_value)
+  
+  Pvalue <- 1 - pchisq(LR_CC, 1)
+  
+  return(list(Test_statistic_LR_CC = LR_CC,
+              Critical_Value_LR_CC = critical_value,
+              Rejection_H0_LR_CC = Rejection_H0,
+              Pvalue_LR_CC = Pvalue))
+  
+}
+
+# Période d'Estimation : 2007-2008
+
+
+# Étape 1 : Identifier les indices des deux périodes
+Indices_2007_2008 <- which(Dates_Prices >= "2007-01-01" & Dates_Prices <= "2008-12-31")
+Indices_2009_2023 <- which(Dates_Prices >= "2009-01-01" & Dates_Prices <= "2023-12-31")
+
+# Étape 2 : Extraire les prix pour chaque période
+Prices_JPM_2007_2008 <- Prices_JPM[Indices_2007_2008]
+Prices_AIG_2007_2008 <- Prices_AIG[Indices_2007_2008]
+Prices_GS_2007_2008 <- Prices_GS[Indices_2007_2008]
+
+# Étape 3 : Calculer les rendements logarithmiques pour chaque période
+
+Returns_JPM_2007_2008 <- log(Prices_JPM_2007_2008[2:length(Prices_JPM_2007_2008)] / 
+                               Prices_JPM_2007_2008[1:(length(Prices_JPM_2007_2008) - 1)])
+
+Returns_AIG_2007_2008 <- log(Prices_AIG_2007_2008[2:length(Prices_AIG_2007_2008)] / 
+                               Prices_AIG_2007_2008[1:(length(Prices_AIG_2007_2008) - 1)])
+
+Returns_GS_2007_2008 <- log(Prices_GS_2007_2008[2:length(Prices_GS_2007_2008)] / 
+                              Prices_GS_2007_2008[1:(length(Prices_GS_2007_2008) - 1)])
+
+Dates_Returns_JPM_2007_2008 <- Dates_Returns_JPM[Dates_Returns_JPM >= "2007-01-01" & Dates_Returns_JPM <= "2008-12-31"]
+Dates_Returns_AIG_2007_2008 <- Dates_Returns_AIG[Dates_Returns_AIG >= "2007-01-01" & Dates_Returns_AIG <= "2008-12-31"]
+Dates_Returns_GS_2007_2008 <- Dates_Returns_GS[Dates_Returns_GS >= "2007-01-01" & Dates_Returns_GS <= "2008-12-31"]
+
+
+# Transform returns into a "xts" vector (specific to the R package)
+
+Returns_JPM_xts_2007_2008 <- xts(x = Returns_JPM_2007_2008, order.by = Dates_Returns_JPM_2007_2008)
+Returns_AIG_xts_2007_2008 <- xts(x = Returns_AIG_2007_2008, order.by = Dates_Returns_AIG_2007_2008)
+Returns_GS_xts_2007_2008 <- xts(x = Returns_GS_2007_2008, order.by = Dates_Returns_GS_2007_2008)
+
+T_Returns_JPM_2007_2008 <- length(Returns_JPM_2007_2008)
+T_Returns_AIG_2007_2008 <- length(Returns_AIG_2007_2008)
+T_Returns_GS_2007_2008 <- length(Returns_GS_2007_2008)
+
+# Période de test 2009-2023 (pour le back testing)
+
+
+Returns_JPM_2009_2023 <- Returns_JPM[(T_Returns_JPM_2007_2008 + 1):length(Returns_JPM)]
+Returns_AIG_2009_2023 <- Returns_AIG[(T_Returns_AIG_2007_2008 + 1):length(Returns_AIG)]
+Returns_GS_2009_2023 <- Returns_GS[(T_Returns_GS_2007_2008 + 1):length(Returns_GS)]
+
+Dates_Returns_JPM_2009_2023 <- Dates_Returns_JPM[(T_Returns_JPM_2007_2008 + 1):length(Returns_JPM)]
+Dates_Returns_AIG_2009_2023 <- Dates_Returns_AIG[(T_Returns_AIG_2007_2008 + 1):length(Returns_AIG)]
+Dates_Returns_GS_2009_2023 <- Dates_Returns_GS[(T_Returns_GS_2007_2008 + 1):length(Returns_GS)]
+
+Returns_JPM_2009_2023_xts <- xts(x = Returns_JPM_2009_2023, order.by = Dates_Returns_JPM_2009_2023)
+Returns_AIG_2009_2023_xts <- xts(x = Returns_AIG_2009_2023, order.by = Dates_Returns_AIG_2009_2023)
+Returns_GS_2009_2023_xts <- xts(x = Returns_GS_2009_2023, order.by = Dates_Returns_GS_2009_2023)
+
+
+# Rolling window
+
+window_s <- 250 # 2520 jours pour validation
+
+alpha_rl <- 0.05
+
+VaR_JPM_HS_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+VaR_AIG_HS_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+VaR_GS_HS_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+VaR_JPM_GARCH_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+VaR_AIG_GARCH_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+VaR_GS_GARCH_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+omega_JPM_rw_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+omega_AIG_rw_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+omega_GS_rw_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+alpha_JPM_rw_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+alpha_AIG_rw_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+alpha_GS_rw_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+beta_JPM_rw_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+beta_AIG_rw_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+beta_GS_rw_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+var_cond_garch_1_1_JPM_rw_forecast_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+var_cond_garch_1_1_AIG_rw_forecast_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+var_cond_garch_1_1_GS_rw_forecast_1 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2008)))
+
+sigma_cond_garch_1_1_JPM_rw_forecast_1 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)))
+sigma_cond_garch_1_1_AIG_rw_forecast_1 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)))
+sigma_cond_garch_1_1_GS_rw_forecast_1<- double(length = length(1:(length(Returns_GS) - T_Returns_JPM_2007_2008)))
+
+
+
+for (i in 1:(length(Returns_JPM) - T_Returns_JPM_2007_2008)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_JPM_rw_1 <- Returns_JPM[(T_Returns_JPM_2007_2008 + i - 1 - (window_s-1)):(T_Returns_JPM_2007_2008 + i - 1)]
+  Dates_Returns_JPM_rw_1 <- Dates_Returns_JPM[(T_Returns_JPM_2007_2008 + i - 1 - (window_s-1)):(T_Returns_JPM_2007_2008 + i - 1)]
+  Returns_JPM_rw_xts_1 <- xts(x = Returns_JPM_rw_1, order.by = Dates_Returns_JPM_rw_1)
+  
+  garch_1_1_JPM_norm_rw_1 <- garch_modelspec(Returns_JPM_rw_xts_1,
+                                           model = "garch",
+                                           order = c(1, 1),
+                                           distribution = "norm")
+  
+  garch_1_1_JPM_norm_rw_est_1 <- estimate(garch_1_1_JPM_norm_rw_1)
+  omega_JPM_rw_1[i] <- coef(garch_1_1_JPM_norm_rw_est_1)[1]
+  alpha_JPM_rw_1[i] <- coef(garch_1_1_JPM_norm_rw_est_1)[2]
+  beta_JPM_rw_1[i] <- coef(garch_1_1_JPM_norm_rw_est_1)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_JPM_rw_forecast_1[i] <- omega_JPM_rw_1[i] + 
+      alpha_JPM_rw_1[i]*(Returns_JPM_rw_1[length(Returns_JPM_rw_1)]**2) + 
+      beta_JPM_rw_1[i]*(omega_JPM_rw_1[i]/(1 - alpha_JPM_rw_1[i] - beta_JPM_rw_1[i]))
+  } else {
+    var_cond_garch_1_1_JPM_rw_forecast_1[i] <- omega_JPM_rw_1[i] + 
+      alpha_JPM_rw_1[i]*(Returns_JPM_rw_1[length(Returns_JPM_rw_1)]**2) + 
+      beta_JPM_rw_1[i]*var_cond_garch_1_1_JPM_rw_forecast_1[i-1]
+  }
+  
+  sigma_cond_garch_1_1_JPM_rw_forecast_1[i] <- sqrt(var_cond_garch_1_1_JPM_rw_forecast_1[i])
+  
+  # VaR forecast
+  
+  VaR_JPM_GARCH_1[i] <- sigma_cond_garch_1_1_JPM_rw_forecast_1[i]*qnorm(alpha_rl)
+  
+  VaR_JPM_HS_1[i] <- quantile(Returns_JPM_rw_1, probs = alpha_rl)
+  
+}
+
+
+for (i in 1:(length(Returns_AIG) - T_Returns_AIG_2007_2008)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_AIG_rw_1 <- Returns_AIG[(T_Returns_AIG_2007_2008 + i - 1 - (window_s-1)):(T_Returns_AIG_2007_2008 + i - 1)]
+  Dates_Returns_AIG_rw_1 <- Dates_Returns_AIG[(T_Returns_AIG_2007_2008 + i - 1 - (window_s-1)):(T_Returns_AIG_2007_2008 + i - 1)]
+  Returns_AIG_rw_xts_1 <- xts(x = Returns_AIG_rw_1, order.by = Dates_Returns_AIG_rw_1)
+  
+  garch_1_1_AIG_norm_rw_1 <- garch_modelspec(Returns_AIG_rw_xts_1,
+                                           model = "garch",
+                                           order = c(1, 1),
+                                           distribution = "norm")
+  
+  garch_1_1_AIG_norm_rw_est_1 <- estimate(garch_1_1_AIG_norm_rw_1)
+  omega_AIG_rw_1[i] <- coef(garch_1_1_AIG_norm_rw_est_1)[1]
+  alpha_AIG_rw_1[i] <- coef(garch_1_1_AIG_norm_rw_est_1)[2]
+  beta_AIG_rw_1[i] <- coef(garch_1_1_AIG_norm_rw_est_1)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_AIG_rw_forecast_1[i] <- omega_AIG_rw_1[i] + 
+      alpha_AIG_rw_1[i]*(Returns_AIG_rw_1[length(Returns_AIG_rw_1)]**2) + 
+      beta_AIG_rw_1[i]*(omega_AIG_rw_1[i]/(1 - alpha_AIG_rw_1[i] - beta_AIG_rw_1[i]))
+  } else {
+    var_cond_garch_1_1_AIG_rw_forecast_1[i] <- omega_AIG_rw_1[i] + 
+      alpha_AIG_rw_1[i]*(Returns_AIG_rw_1[length(Returns_AIG_rw_1)]**2) + 
+      beta_AIG_rw_1[i]*var_cond_garch_1_1_AIG_rw_forecast_1[i-1]
+  }
+  
+  sigma_cond_garch_1_1_AIG_rw_forecast_1[i] <- sqrt(var_cond_garch_1_1_AIG_rw_forecast_1[i])
+  
+  # VaR forecast
+  
+  VaR_AIG_GARCH_1[i] <- sigma_cond_garch_1_1_AIG_rw_forecast_1[i]*qnorm(alpha_rl)
+  
+  VaR_AIG_HS_1[i] <- quantile(Returns_AIG_rw_1, probs = alpha_rl)
+  
+}
+
+
+
+for (i in 1:(length(Returns_GS) - T_Returns_GS_2007_2008)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_GS_rw_1 <- Returns_GS[(T_Returns_GS_2007_2008 + i - 1 - (window_s-1)):(T_Returns_GS_2007_2008 + i - 1)]
+  Dates_Returns_GS_rw_1 <- Dates_Returns_GS[(T_Returns_JPM_2007_2008 + i - 1 - (window_s-1)):(T_Returns_GS_2007_2008 + i - 1)]
+  Returns_GS_rw_xts_1 <- xts(x = Returns_GS_rw_1, order.by = Dates_Returns_GS_rw_1)
+  
+  garch_1_1_GS_norm_rw_1 <- garch_modelspec(Returns_GS_rw_xts_1,
+                                          model = "garch",
+                                          order = c(1, 1),
+                                          distribution = "norm")
+  
+  garch_1_1_GS_norm_rw_est_1 <- estimate(garch_1_1_GS_norm_rw_1)
+  omega_GS_rw_1[i] <- coef(garch_1_1_GS_norm_rw_est_1)[1]
+  alpha_GS_rw_1[i] <- coef(garch_1_1_GS_norm_rw_est_1)[2]
+  beta_GS_rw_1[i] <- coef(garch_1_1_GS_norm_rw_est_1)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_GS_rw_forecast_1[i] <- omega_GS_rw_1[i] + 
+      alpha_GS_rw_1[i]*(Returns_GS_rw_1[length(Returns_GS_rw_1)]**2) + 
+      beta_GS_rw_1[i]*(omega_GS_rw_1[i]/(1 - alpha_GS_rw_1[i] - beta_GS_rw_1[i]))
+  } else {
+    var_cond_garch_1_1_GS_rw_forecast_1[i] <- omega_GS_rw_1[i] + 
+      alpha_GS_rw_1[i]*(Returns_GS_rw_1[length(Returns_GS_rw_1)]**2) + 
+      beta_GS_rw_1[i]*var_cond_garch_1_1_GS_rw_forecast_1[i-1]
+  }
+  
+  sigma_cond_garch_1_1_GS_rw_forecast_1[i] <- sqrt(var_cond_garch_1_1_GS_rw_forecast_1[i])
+  
+  # VaR forecast
+  
+  VaR_GS_GARCH_1[i] <- sigma_cond_garch_1_1_GS_rw_forecast_1[i]*qnorm(alpha_rl)
+  
+  VaR_GS_HS_1[i] <- quantile(Returns_GS_rw_1, probs = alpha_rl)
+  
+}
+
+
+
+## Step 5----
+
+# Identification of hits
+
+VaR_JPM_GARCH_hits <- (Returns_JPM_2009_2023 < VaR_JPM_GARCH_1) # est utilisé pour identifier les jours où les rendements des actions de JPM (J.P. Morgan) sont inférieurs à la Valeur à Risque (VaR) estimée par le modèle GARCH.
+VaR_AIG_GARCH_hits <- (Returns_AIG_2009_2023 < VaR_AIG_GARCH_1) #VaR_JPM_GARCH_hits : Ce vecteur logique résume les jours où les rendements journaliers des actions de JPM ont "violé" la VaR. Autrement dit, il indique les jours où les pertes ont été plus élevées que ce qui était prévu par le modèle de risque.
+VaR_GS_GARCH_hits <- (Returns_GS_2009_2023 < VaR_GS_GARCH_1)
+
+
+VaR_JPM_HS_hits <- (Returns_JPM_2009_2023 < VaR_JPM_HS_1) # est utilisé pour identifier les jours où les rendements des actions de JPM (J.P. Morgan) sont inférieurs à la Valeur à Risque (VaR) estimée par le modèle GARCH.
+VaR_AIG_HS_hits <- (Returns_AIG_2009_2023 < VaR_AIG_HS_1) #VaR_JPM_GARCH_hits : Ce vecteur logique résume les jours où les rendements journaliers des actions de JPM ont "violé" la VaR. Autrement dit, il indique les jours où les pertes ont été plus élevées que ce qui était prévu par le modèle de risque.
+VaR_GS_HS_hits <- (Returns_GS_2009_2023 < VaR_GS_HS_1)
+
+
+# Calculation of violation ratio
+
+# Backtesting VaR
+
+## Testing the UC hypothesis
+
+### Violation ratio 
+
+VR_VaR_JPM_GARCH_hits <- sum(VaR_JPM_GARCH_hits)/(length(Returns_JPM_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_GARCH_hits, "\n")
+
+VR_VaR_AIG_GARCH_hits <- sum(VaR_AIG_GARCH_hits)/(length(Returns_AIG_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_AIG_GARCH_hits, "\n")
+
+VR_VaR_GS_GARCH_hits <- sum(VaR_GS_GARCH_hits)/(length(Returns_GS_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_GS_GARCH_hits, "\n")
+
+
+VR_VaR_JPM_HS_hits <- sum(VaR_JPM_HS_hits)/(length(Returns_JPM_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_HS_hits, "\n")
+
+VR_VaR_AIG_HS_hits <- sum(VaR_AIG_HS_hits)/(length(Returns_AIG_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_HS_hits, "\n")
+
+VR_VaR_GS_HS_hits <- sum(VaR_GS_HS_hits)/(length(Returns_GS_2009_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_GS_HS_hits, "\n")
+
+
+### Mean test
+
+tau_VaR_JPM_GARCH_hits <- (mean(VaR_JPM_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_JPM_2009_2023))*var(VaR_JPM_GARCH_hits))
+(abs(tau_VaR_JPM_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_JPM_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_JPM_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_AIG_GARCH_hits <- (mean(VaR_AIG_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_AIG_2009_2023))*var(VaR_AIG_GARCH_hits))
+(abs(tau_VaR_AIG_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_AIG_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_AIG_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_GS_GARCH_hits <- (mean(VaR_GS_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_GS_2009_2023))*var(VaR_GS_GARCH_hits))
+(abs(tau_VaR_GS_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_GS_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_GS_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_JPM_HS_hits <- (mean(VaR_JPM_HS_hits) - alpha_rl) / sqrt((1/length(Returns_JPM_2009_2023))*var(VaR_JPM_HS_hits))
+(abs(tau_VaR_JPM_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_JPM_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_JPM_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_AIG_HS_hits <- (mean(VaR_AIG_HS_hits) - alpha_rl) / sqrt((1/length(Returns_AIG_2009_2023))*var(VaR_AIG_HS_hits))
+(abs(tau_VaR_AIG_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_AIG_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_AIG_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_GS_HS_hits <- (mean(VaR_GS_HS_hits) - alpha_rl) / sqrt((1/length(Returns_GS_2009_2023))*var(VaR_GS_HS_hits))
+(abs(tau_VaR_GS_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_GS_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_GS_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+
+### LR backtest
+
+Backtest_LR_UC_JPM_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_UC_JPM_VaR_GARCH_hits)
+
+Backtest_LR_UC_AIG_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_UC_AIG_VaR_GARCH_hits)
+
+Backtest_LR_UC_GS_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_GS_GARCH_hits)
+print(Backtest_LR_UC_GS_VaR_GARCH_hits)
+
+Backtest_LR_UC_JPM_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_UC_JPM_VaR_HS_hits)
+
+Backtest_LR_UC_AIG_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_UC_AIG_VaR_HS_hits)
+
+Backtest_LR_UC_GS_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_UC_GS_VaR_HS_hits)
+
+
+## Testing the IND hypothesis
+
+### Analysis of ACF
+
+par(mfrow = c(1, 3))
+
+acf(VaR_JPM_GARCH_hits*1)
+acf(VaR_AIG_GARCH_hits*1)
+acf(VaR_GS_GARCH_hits*1)
+
+acf(VaR_JPM_HS_hits*1)
+acf(VaR_AIG_HS_hits*1)
+acf(VaR_GS_HS_hits*1)
+
+### Portmanteau tests
+
+LB_VaR_JPM_GARCH_hits <- ljung_box(VaR_JPM_GARCH_hits*1, lag = 5)
+print(LB_VaR_JPM_GARCH_hits)
+
+LB_VaR_AIG_GARCH_hits <- ljung_box(VaR_AIG_GARCH_hits*1, lag = 5)
+print(LB_VaR_AIG_GARCH_hits)
+
+LB_VaR_GS_GARCH_hits <- ljung_box(VaR_GS_GARCH_hits*1, lag = 5)
+print(LB_VaR_GS_GARCH_hits)
+
+LB_VaR_JPM_HS_hits <- ljung_box(VaR_JPM_HS_hits*1, lag = 5)
+print(LB_VaR_JPM_HS_hits)
+
+LB_VaR_AIG_HS_hits <- ljung_box(VaR_AIG_HS_hits*1, lag = 5)
+print(LB_VaR_AIG_HS_hits)
+
+LB_VaR_GS_HS_hits <- ljung_box(VaR_GS_HS_hits*1, lag = 5)
+print(LB_VaR_GS_HS_hits)
+
+BP_VaR_JPM_GARCH_hits <- box_pierce(VaR_JPM_GARCH_hits*1, lag = 5)
+print(BP_VaR_JPM_GARCH_hits)
+
+BP_VaR_AIG_GARCH_hits <- box_pierce(VaR_AIG_GARCH_hits*1, lag = 5)
+print(BP_VaR_AIG_GARCH_hits)
+
+BP_VaR_GS_GARCH_hits <- box_pierce(VaR_GS_GARCH_hits*1, lag = 5)
+print(BP_VaR_GS_GARCH_hits)
+
+BP_VaR_JPM_HS_hits <- box_pierce(VaR_JPM_HS_hits*1, lag = 5)
+print(BP_VaR_JPM_HS_hits)
+
+BP_VaR_AIG_HS_hits <- box_pierce(VaR_AIG_HS_hits*1, lag = 5)
+print(BP_VaR_AIG_HS_hits)
+
+BP_VaR_GS_HS_hits <- box_pierce(VaR_GS_HS_hits*1, lag = 5)
+print(BP_VaR_GS_HS_hits)
+
+### LR backtest
+
+Backtest_LR_IND_VaR_JPM_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_IND_VaR_JPM_GARCH_hits)
+
+Backtest_LR_IND_VaR_AIG_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_IND_VaR_AIG_GARCH_hits)
+
+Backtest_LR_IND_VaR_GS_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_IND_VaR_GS_GARCH_hits)
+
+Backtest_LR_IND_VaR_JPM_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_IND_VaR_JPM_HS_hits)
+
+Backtest_LR_IND_VaR_AIG_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_IND_VaR_AIG_HS_hits)
+
+Backtest_LR_IND_VaR_GS_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_IND_VaR_GS_HS_hits)
+
+
+## Testing the CC hypothesis
+
+Backtest_LR_CC_VaR_JPM_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_CC_VaR_JPM_GARCH_hits)
+
+Backtest_LR_CC_VaR_AIG_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_CC_VaR_AIG_GARCH_hits)
+
+Backtest_LR_CC_VaR_GS_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_GS_GARCH_hits)
+print(Backtest_LR_CC_VaR_GS_GARCH_hits)
+
+
+Backtest_LR_CC_VaR_JPM_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_CC_VaR_JPM_HS_hits)
+
+Backtest_LR_CC_VaR_AIG_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_CC_VaR_AIG_HS_hits)
+
+Backtest_LR_CC_VaR_GS_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_CC_VaR_GS_HS_hits)
+
+
+
+# Nouvelle répartition de la période---- 
+
+## Période d'Estimation : 2007-2009
+
+
+# Étape 1 : Identifier les indices des deux périodes
+Indices_2007_2009 <- which(Dates_Prices >= "2007-01-01" & Dates_Prices <= "2009-12-31")
+Indices_2010_2023 <- which(Dates_Prices >= "2010-01-01" & Dates_Prices <= "2023-12-31")
+
+# Étape 2 : Extraire les prix pour chaque période
+Prices_JPM_2007_2009 <- Prices_JPM[Indices_2007_2009]
+Prices_AIG_2007_2009 <- Prices_AIG[Indices_2007_2009]
+Prices_GS_2007_2009 <- Prices_GS[Indices_2007_2009]
+
+# Étape 3 : Calculer les rendements logarithmiques pour chaque période
+
+Returns_JPM_2007_2009 <- log(Prices_JPM_2007_2009[2:length(Prices_JPM_2007_2009)] / 
+                               Prices_JPM_2007_2009[1:(length(Prices_JPM_2007_2009) - 1)])
+
+Returns_AIG_2007_2009 <- log(Prices_AIG_2007_2009[2:length(Prices_AIG_2007_2009)] / 
+                               Prices_AIG_2007_2009[1:(length(Prices_AIG_2007_2009) - 1)])
+
+Returns_GS_2007_2009 <- log(Prices_GS_2007_2009[2:length(Prices_GS_2007_2009)] / 
+                              Prices_GS_2007_2009[1:(length(Prices_GS_2007_2009) - 1)])
+
+Dates_Returns_JPM_2007_2009 <- Dates_Returns_JPM[Dates_Returns_JPM >= "2007-01-01" & Dates_Returns_JPM <= "2009-12-31"]
+Dates_Returns_AIG_2007_2009 <- Dates_Returns_AIG[Dates_Returns_AIG >= "2007-01-01" & Dates_Returns_AIG <= "2009-12-31"]
+Dates_Returns_GS_2007_2009 <- Dates_Returns_GS[Dates_Returns_GS >= "2007-01-01" & Dates_Returns_GS <= "2009-12-31"]
+
+
+# Transform returns into a "xts" vector (specific to the R package)
+
+Returns_JPM_xts_2007_2009 <- xts(x = Returns_JPM_2007_2009, order.by = Dates_Returns_JPM_2007_2009)
+Returns_AIG_xts_2007_2009 <- xts(x = Returns_AIG_2007_2009, order.by = Dates_Returns_AIG_2007_2009)
+Returns_GS_xts_2007_2009 <- xts(x = Returns_GS_2007_2009, order.by = Dates_Returns_GS_2007_2009)
+
+T_Returns_JPM_2007_2009 <- length(Returns_JPM_2007_2009)
+T_Returns_AIG_2007_2009 <- length(Returns_AIG_2007_2009)
+T_Returns_GS_2007_2009 <- length(Returns_GS_2007_2009)
+
+# Période de test 2009-2023 (pour le bachtesting)
+
+
+Returns_JPM_2010_2023 <- Returns_JPM[(T_Returns_JPM_2007_2009 + 1):length(Returns_JPM)]
+Returns_AIG_2010_2023 <- Returns_AIG[(T_Returns_AIG_2007_2009 + 1):length(Returns_AIG)]
+Returns_GS_2010_2023 <- Returns_GS[(T_Returns_GS_2007_2009 + 1):length(Returns_GS)]
+
+Dates_Returns_JPM_2010_2023 <- Dates_Returns_JPM[(T_Returns_JPM_2007_2009 + 1):length(Returns_JPM)]
+Dates_Returns_AIG_2010_2023 <- Dates_Returns_AIG[(T_Returns_AIG_2007_2009 + 1):length(Returns_AIG)]
+Dates_Returns_GS_2010_2023 <- Dates_Returns_GS[(T_Returns_GS_2007_2009 + 1):length(Returns_GS)]
+
+Returns_JPM_2010_2023_xts <- xts(x = Returns_JPM_2010_2023, order.by = Dates_Returns_JPM_2010_2023)
+Returns_AIG_2010_2023_xts <- xts(x = Returns_AIG_2010_2023, order.by = Dates_Returns_AIG_2010_2023)
+Returns_GS_2010_2023_xts <- xts(x = Returns_GS_2010_2023, order.by = Dates_Returns_GS_2010_2023)
+
+
+# Rolling window
+
+window_s <- 500 # 500 jours pour validation
+
+alpha_rl <- 0.05
+
+VaR_JPM_HS_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+VaR_AIG_HS_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+VaR_GS_HS_2 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+VaR_JPM_GARCH_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+VaR_AIG_GARCH_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+VaR_GS_GARCH_2<- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+omega_JPM_rw_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+omega_AIG_rw_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+omega_GS_rw_2<- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+alpha_JPM_rw_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+alpha_AIG_rw_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+alpha_GS_rw_2 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+beta_JPM_rw_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+beta_AIG_rw_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+beta_GS_rw_2 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+var_cond_garch_1_1_JPM_rw_forecast_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+var_cond_garch_1_1_AIG_rw_forecast_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+var_cond_garch_1_1_GS_rw_forecast_2 <- double(length = length(1:(length(Returns_GS) - T_Returns_GS_2007_2009)))
+
+sigma_cond_garch_1_1_JPM_rw_forecast_2 <- double(length = length(1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)))
+sigma_cond_garch_1_1_AIG_rw_forecast_2 <- double(length = length(1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)))
+sigma_cond_garch_1_1_GS_rw_forecast_2 <- double(length = length(1:(length(Returns_GS) - T_Returns_JPM_2007_2009)))
+
+
+
+for (i in 1:(length(Returns_JPM) - T_Returns_JPM_2007_2009)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_JPM_rw_2 <- Returns_JPM[(T_Returns_JPM_2007_2009 + i - 1 - (window_s-1)):(T_Returns_JPM_2007_2009 + i - 1)]
+  Dates_Returns_JPM_rw_2 <- Dates_Returns_JPM[(T_Returns_JPM_2007_2009 + i - 1 - (window_s-1)):(T_Returns_JPM_2007_2009 + i - 1)]
+  Returns_JPM_rw_xts_2 <- xts(x = Returns_JPM_rw_2, order.by = Dates_Returns_JPM_rw_2)
+  
+  garch_1_1_JPM_norm_rw_2 <- garch_modelspec(Returns_JPM_rw_xts_2,
+                                             model = "garch",
+                                             order = c(1, 1),
+                                             distribution = "norm")
+  
+  garch_1_1_JPM_norm_rw_est_2 <- estimate(garch_1_1_JPM_norm_rw_2)
+  omega_JPM_rw_2[i] <- coef(garch_1_1_JPM_norm_rw_est_2)[1]
+  alpha_JPM_rw_2[i] <- coef(garch_1_1_JPM_norm_rw_est_2)[2]
+  beta_JPM_rw_2[i] <- coef(garch_1_1_JPM_norm_rw_est_2)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_JPM_rw_forecast_2[i] <- omega_JPM_rw_2[i] + 
+      alpha_JPM_rw_2[i]*(Returns_JPM_rw_2[length(Returns_JPM_rw_2)]**2) + 
+      beta_JPM_rw_2[i]*(omega_JPM_rw_2[i]/(1 - alpha_JPM_rw_2[i] - beta_JPM_rw_2[i]))
+  } else {
+    var_cond_garch_1_1_JPM_rw_forecast_2[i] <- omega_JPM_rw_2[i] + 
+      alpha_JPM_rw_2[i]*(Returns_JPM_rw_2[length(Returns_JPM_rw_2)]**2) + 
+      beta_JPM_rw_2[i]*var_cond_garch_1_1_JPM_rw_forecast_2[i-1]
+  }
+  
+  sigma_cond_garch_1_1_JPM_rw_forecast_2[i] <- sqrt(var_cond_garch_1_1_JPM_rw_forecast_2[i])
+  
+  # VaR forecast
+  
+  VaR_JPM_GARCH_2[i] <- sigma_cond_garch_1_1_JPM_rw_forecast_2[i]*qnorm(alpha_rl)
+  
+  VaR_JPM_HS_1[i] <- quantile(Returns_JPM_rw_2, probs = alpha_rl)
+  
+}
+
+
+for (i in 1:(length(Returns_AIG) - T_Returns_AIG_2007_2009)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_AIG_rw_2 <- Returns_AIG[(T_Returns_AIG_2007_2009 + i - 1 - (window_s-1)):(T_Returns_AIG_2007_2009 + i - 1)]
+  Dates_Returns_AIG_rw_2 <- Dates_Returns_AIG[(T_Returns_AIG_2007_2009 + i - 1 - (window_s-1)):(T_Returns_AIG_2007_2009 + i - 1)]
+  Returns_AIG_rw_xts_2 <- xts(x = Returns_AIG_rw_2, order.by = Dates_Returns_AIG_rw_2)
+  
+  garch_1_1_AIG_norm_rw_2 <- garch_modelspec(Returns_AIG_rw_xts_2,
+                                             model = "garch",
+                                             order = c(1, 1),
+                                             distribution = "norm")
+  
+  garch_1_1_AIG_norm_rw_est_2 <- estimate(garch_1_1_AIG_norm_rw_2)
+  omega_AIG_rw_2[i] <- coef(garch_1_1_AIG_norm_rw_est_2)[1]
+  alpha_AIG_rw_2[i] <- coef(garch_1_1_AIG_norm_rw_est_2)[2]
+  beta_AIG_rw_2[i] <- coef(garch_1_1_AIG_norm_rw_est_2)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_AIG_rw_forecast_2[i] <- omega_AIG_rw_2[i] + 
+      alpha_AIG_rw_2[i]*(Returns_AIG_rw_2[length(Returns_AIG_rw_2)]**2) + 
+      beta_AIG_rw_2[i]*(omega_AIG_rw_2[i]/(1 - alpha_AIG_rw_2[i] - beta_AIG_rw_2[i]))
+  } else {
+    var_cond_garch_1_1_AIG_rw_forecast_2[i] <- omega_AIG_rw_2[i] + 
+      alpha_AIG_rw_2[i]*(Returns_AIG_rw_2[length(Returns_AIG_rw_2)]**2) + 
+      beta_AIG_rw_2[i]*var_cond_garch_1_1_AIG_rw_forecast_2[i-1]
+  }
+  
+  sigma_cond_garch_1_1_AIG_rw_forecast_2[i] <- sqrt(var_cond_garch_1_1_AIG_rw_forecast_2[i])
+  
+  # VaR forecast
+  
+  VaR_AIG_GARCH_2[i] <- sigma_cond_garch_1_1_AIG_rw_forecast_2[i]*qnorm(alpha_rl)
+  
+  VaR_AIG_HS_2[i] <- quantile(Returns_AIG_rw_2, probs = alpha_rl)
+  
+}
+
+
+
+for (i in 1:(length(Returns_GS) - T_Returns_GS_2007_2009)){ # (window_s-1), otherwise you select window_s+1 observations
+  
+  print(i)
+  
+  Returns_GS_rw_2 <- Returns_GS[(T_Returns_GS_2007_2009 + i - 1 - (window_s-1)):(T_Returns_GS_2007_2009 + i - 1)]
+  Dates_Returns_GS_rw_2 <- Dates_Returns_GS[(T_Returns_JPM_2007_2009 + i - 1 - (window_s-1)):(T_Returns_GS_2007_2009 + i - 1)]
+  Returns_GS_rw_xts_2 <- xts(x = Returns_GS_rw_2, order.by = Dates_Returns_GS_rw_2)
+  
+  garch_1_1_GS_norm_rw_2 <- garch_modelspec(Returns_GS_rw_xts_2,
+                                            model = "garch",
+                                            order = c(1, 1),
+                                            distribution = "norm")
+  
+  garch_1_1_GS_norm_rw_est_2 <- estimate(garch_1_1_GS_norm_rw_2)
+  omega_GS_rw_2[i] <- coef(garch_1_1_GS_norm_rw_est_2)[1]
+  alpha_GS_rw_2[i] <- coef(garch_1_1_GS_norm_rw_est_2)[2]
+  beta_GS_rw_2[i] <- coef(garch_1_1_GS_norm_rw_est_2)[3]
+  
+  if (i == 1){
+    var_cond_garch_1_1_GS_rw_forecast_2[i] <- omega_GS_rw_2[i] + 
+      alpha_GS_rw_2[i]*(Returns_GS_rw_2[length(Returns_GS_rw_2)]**2) + 
+      beta_GS_rw_2[i]*(omega_GS_rw_2[i]/(1 - alpha_GS_rw_2[i] - beta_GS_rw_2[i]))
+  } else {
+    var_cond_garch_1_1_GS_rw_forecast_2[i] <- omega_GS_rw_2[i] + 
+      alpha_GS_rw_2[i]*(Returns_GS_rw_2[length(Returns_GS_rw_2)]**2) + 
+      beta_GS_rw_2[i]*var_cond_garch_1_1_GS_rw_forecast_2[i-1]
+  }
+  
+  sigma_cond_garch_1_1_GS_rw_forecast_2[i] <- sqrt(var_cond_garch_1_1_GS_rw_forecast_2[i])
+  
+  # VaR forecast
+  
+  VaR_GS_GARCH_2[i] <- sigma_cond_garch_1_1_GS_rw_forecast_2[i]*qnorm(alpha_rl)
+  
+  VaR_GS_HS_2[i] <- quantile(Returns_GS_rw_2, probs = alpha_rl)
+  
+}
+
+
+
+## Step 5----
+
+# Identification of hits
+
+VaR_JPM_GARCH_hits <- (Returns_JPM_2010_2023 < VaR_JPM_GARCH_2) # est utilisé pour identifier les jours où les rendements des actions de JPM (J.P. Morgan) sont inférieurs à la Valeur à Risque (VaR) estimée par le modèle GARCH.
+VaR_AIG_GARCH_hits <- (Returns_AIG_2010_2023 < VaR_AIG_GARCH_2) #VaR_JPM_GARCH_hits : Ce vecteur logique résume les jours où les rendements journaliers des actions de JPM ont "violé" la VaR. Autrement dit, il indique les jours où les pertes ont été plus élevées que ce qui était prévu par le modèle de risque.
+VaR_GS_GARCH_hits <- (Returns_GS_2010_2023 < VaR_GS_GARCH_2)
+
+# Calculation of violation ratio
+
+# Backtesting VaR
+
+## Testing the UC hypothesis
+
+### Violation ratio 
+
+VR_VaR_JPM_GARCH_hits <- sum(VaR_JPM_GARCH_hits)/(length(Returns_JPM_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_GARCH_hits, "\n")
+
+VR_VaR_AIG_GARCH_hits <- sum(VaR_AIG_GARCH_hits)/(length(Returns_AIG_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_AIG_GARCH_hits, "\n")
+
+VR_VaR_GS_GARCH_hits <- sum(VaR_GS_GARCH_hits)/(length(Returns_GS_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_GS_GARCH_hits, "\n")
+
+
+VR_VaR_JPM_HS_hits <- sum(VaR_JPM_HS_hits)/(length(Returns_JPM_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_HS_hits, "\n")
+
+VR_VaR_AIG_HS_hits <- sum(VaR_AIG_HS_hits)/(length(Returns_AIG_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_JPM_HS_hits, "\n")
+
+VR_VaR_GS_HS_hits <- sum(VaR_GS_HS_hits)/(length(Returns_GS_2010_2023)*alpha_rl)
+cat("Violation Ratio (GARCH):", VR_VaR_GS_HS_hits, "\n")
+
+
+### Mean test
+
+tau_VaR_JPM_GARCH_hits <- (mean(VaR_JPM_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_JPM_2010_2023))*var(VaR_JPM_GARCH_hits))
+(abs(tau_VaR_JPM_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_JPM_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_JPM_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_AIG_GARCH_hits <- (mean(VaR_AIG_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_AIG_2010_2023))*var(VaR_AIG_GARCH_hits))
+(abs(tau_VaR_AIG_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_AIG_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_AIG_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_GS_GARCH_hits <- (mean(VaR_GS_GARCH_hits) - alpha_rl) / sqrt((1/length(Returns_GS_2010_2023))*var(VaR_GS_GARCH_hits))
+(abs(tau_VaR_GS_GARCH_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_GS_GARCH_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_GS_GARCH_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_JPM_HS_hits <- (mean(VaR_JPM_HS_hits) - alpha_rl) / sqrt((1/length(Returns_JPM_2010_2023))*var(VaR_JPM_HS_hits))
+(abs(tau_VaR_JPM_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_JPM_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_JPM_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_AIG_HS_hits <- (mean(VaR_AIG_HS_hits) - alpha_rl) / sqrt((1/length(Returns_AIG_2010_2023))*var(VaR_AIG_HS_hits))
+(abs(tau_VaR_AIG_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_AIG_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_AIG_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+tau_VaR_GS_HS_hits <- (mean(VaR_GS_HS_hits) - alpha_rl) / sqrt((1/length(Returns_GS_2010_2023))*var(VaR_GS_HS_hits))
+(abs(tau_VaR_GS_HS_hits) > qnorm(1-alpha_rl/2))
+cat("Tau Test Statistic (GARCH):", tau_VaR_GS_HS_hits, "\n")
+cat("Significance (5%):", abs(tau_VaR_GS_HS_hits) > qnorm(1 - alpha_rl / 2), "\n")
+
+
+### LR backtest
+
+Backtest_LR_UC_JPM_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_UC_JPM_VaR_GARCH_hits)
+
+Backtest_LR_UC_AIG_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_UC_AIG_VaR_GARCH_hits)
+
+Backtest_LR_UC_GS_VaR_GARCH_hits <- Backtest_LR_UC(alpha_rl, VaR_GS_GARCH_hits)
+print(Backtest_LR_UC_GS_VaR_GARCH_hits)
+
+Backtest_LR_UC_JPM_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_UC_JPM_VaR_HS_hits)
+
+Backtest_LR_UC_AIG_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_UC_AIG_VaR_HS_hits)
+
+Backtest_LR_UC_GS_VaR_HS_hits <- Backtest_LR_UC(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_UC_GS_VaR_HS_hits)
+
+
+## Testing the IND hypothesis
+
+### Analysis of ACF
+
+acf(VaR_JPM_GARCH_hits*1)
+acf(VaR_AIG_GARCH_hits*1)
+acf(VaR_GS_GARCH_hits*1)
+
+acf(VaR_JPM_HS_hits*1)
+acf(VaR_AIG_HS_hits*1)
+acf(VaR_GS_HS_hits*1)
+
+### Portmanteau tests
+
+LB_VaLB_VaR_JPM_GARCH_hitsR_JPM_GARCH_hits <- ljung_box(VaR_JPM_GARCH_hits*1, lag = 5)
+print(LB_VaR_JPM_GARCH_hits)
+
+LB_VaR_AIG_GARCH_hits <- ljung_box(VaR_AIG_GARCH_hits*1, lag = 5)
+print(LB_VaR_AIG_GARCH_hits)
+
+LB_VaR_GS_GARCH_hits <- ljung_box(VaR_GS_GARCH_hits*1, lag = 5)
+print(LB_VaR_GS_GARCH_hits)
+
+LB_VaR_JPM_HS_hits <- ljung_box(VaR_JPM_HS_hits*1, lag = 5)
+print(LB_VaR_JPM_HS_hits)
+
+LB_VaR_AIG_HS_hits <- ljung_box(VaR_AIG_HS_hits*1, lag = 5)
+print(LB_VaR_AIG_HS_hits)
+
+LB_VaR_GS_HS_hits <- ljung_box(VaR_GS_HS_hits*1, lag = 5)
+print(LB_VaR_GS_HS_hits)
+
+BP_VaR_JPM_GARCH_hits <- box_pierce(VaR_JPM_GARCH_hits*1, lag = 5)
+print(BP_VaR_JPM_GARCH_hits)
+
+BP_VaR_AIG_GARCH_hits <- box_pierce(VaR_AIG_GARCH_hits*1, lag = 5)
+print(BP_VaR_AIG_GARCH_hits)
+
+BP_VaR_GS_GARCH_hits <- box_pierce(VaR_GS_GARCH_hits*1, lag = 5)
+print(BP_VaR_GS_GARCH_hits)
+
+BP_VaR_JPM_HS_hits <- box_pierce(VaR_JPM_HS_hits*1, lag = 5)
+print(BP_VaR_JPM_HS_hits)
+
+BP_VaR_AIG_HS_hits <- box_pierce(VaR_AIG_HS_hits*1, lag = 5)
+print(BP_VaR_AIG_HS_hits)
+
+BP_VaR_GS_HS_hits <- box_pierce(VaR_GS_HS_hits*1, lag = 5)
+print(BP_VaR_GS_HS_hits)
+
+### LR backtest
+
+Backtest_LR_IND_VaR_JPM_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_IND_VaR_JPM_GARCH_hits)
+
+Backtest_LR_IND_VaR_AIG_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_IND_VaR_AIG_GARCH_hits)
+
+Backtest_LR_IND_VaR_GS_GARCH_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_IND_VaR_GS_GARCH_hits)
+
+Backtest_LR_IND_VaR_JPM_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_IND_VaR_JPM_HS_hits)
+
+Backtest_LR_IND_VaR_AIG_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_IND_VaR_AIG_HS_hits)
+
+Backtest_LR_IND_VaR_GS_HS_hits <- Backtest_LR_IND(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_IND_VaR_GS_HS_hits)
+
+
+## Testing the CC hypothesis
+
+Backtest_LR_CC_VaR_JPM_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_JPM_GARCH_hits)
+print(Backtest_LR_CC_VaR_JPM_GARCH_hits)
+
+Backtest_LR_CC_VaR_AIG_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_AIG_GARCH_hits)
+print(Backtest_LR_CC_VaR_AIG_GARCH_hits)
+
+Backtest_LR_CC_VaR_GS_GARCH_hits <- Backtest_LR_CC(alpha_rl, VaR_GS_GARCH_hits)
+print(Backtest_LR_CC_VaR_GS_GARCH_hits)
+
+
+Backtest_LR_CC_VaR_JPM_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_JPM_HS_hits)
+print(Backtest_LR_CC_VaR_JPM_HS_hits)
+
+Backtest_LR_CC_VaR_AIG_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_AIG_HS_hits)
+print(Backtest_LR_CC_VaR_AIG_HS_hits)
+
+Backtest_LR_CC_VaR_GS_HS_hits <- Backtest_LR_CC(alpha_rl, VaR_GS_HS_hits)
+print(Backtest_LR_CC_VaR_GS_HS_hits)
+```
+
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
